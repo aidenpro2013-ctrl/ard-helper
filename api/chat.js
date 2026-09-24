@@ -47,12 +47,16 @@ export default async function handler(req) {
   if (!clean.length) return json({ error: 'No valid messages' }, 400);
 
   const lastUser = [...clean].reverse().find(m => m.role === 'user')?.content || '';
+  const profileContext = typeof body.profileContext === 'string' ? body.profileContext.slice(0, 2000) : '';
+  const systemExtra = profileContext
+    ? ('\n\nParent profile context (use only if helpful; do not invent details):\n' + profileContext)
+    : '';
   const plan = chooseProvider(lastUser, { geminiKey, groqKey, xaiKey });
 
   const errors = [];
   for (const step of plan) {
     try {
-      const result = await callProvider(step, clean, { geminiKey, groqKey, xaiKey });
+      const result = await callProvider(step, clean, { geminiKey, groqKey, xaiKey }, systemExtra);
       if (result?.reply) {
         return json({
           reply: result.reply,
@@ -96,14 +100,14 @@ function chooseProvider(text, keys) {
   });
 }
 
-async function callProvider(step, clean, keys) {
-  if (step.provider === 'gemini') return callGemini(keys.geminiKey, step.model, clean);
-  if (step.provider === 'groq') return callOpenAICompat('https://api.groq.com/openai/v1/chat/completions', keys.groqKey, step.model, clean);
-  if (step.provider === 'xai') return callOpenAICompat('https://api.x.ai/v1/chat/completions', keys.xaiKey, step.model, clean);
+async function callProvider(step, clean, keys, systemExtra) {
+  if (step.provider === 'gemini') return callGemini(keys.geminiKey, step.model, clean, systemExtra);
+  if (step.provider === 'groq') return callOpenAICompat('https://api.groq.com/openai/v1/chat/completions', keys.groqKey, step.model, clean, systemExtra);
+  if (step.provider === 'xai') return callOpenAICompat('https://api.x.ai/v1/chat/completions', keys.xaiKey, step.model, clean, systemExtra);
   throw new Error('Unknown provider');
 }
 
-async function callGemini(key, model, clean) {
+async function callGemini(key, model, clean, systemExtra) {
   const contents = [];
   for (const m of clean) {
     contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
@@ -113,7 +117,7 @@ async function callGemini(key, model, clean) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM }] },
+      systemInstruction: { parts: [{ text: SYSTEM + (systemExtra || '') }] },
       contents,
       generationConfig: { temperature: 0.5, maxOutputTokens: 1200 }
     })
@@ -126,7 +130,7 @@ async function callGemini(key, model, clean) {
   return { reply: text, model };
 }
 
-async function callOpenAICompat(baseUrl, key, model, clean) {
+async function callOpenAICompat(baseUrl, key, model, clean, systemExtra) {
   const r = await fetch(baseUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
@@ -134,7 +138,7 @@ async function callOpenAICompat(baseUrl, key, model, clean) {
       model,
       temperature: 0.5,
       max_tokens: 1200,
-      messages: [{ role: 'system', content: SYSTEM }, ...clean]
+      messages: [{ role: 'system', content: SYSTEM + (systemExtra || '') }, ...clean]
     })
   });
   const data = await r.json().catch(() => ({}));
